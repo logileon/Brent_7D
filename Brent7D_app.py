@@ -11,34 +11,29 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# ─── Настройки страницы ─────────────────────────────────────────────────────
+# ─── Page Settings ──────────────────────────────────────────────────────────
 st.set_page_config(page_title="Brent Forecast Pro", layout="wide")
 
-# ─── Константы ───────────────────────────────────────────────────────────────
+# ─── Constants ──────────────────────────────────────────────────────────────
 TICKER = "BZ=F"
 ARIMA_ORDER = (5, 1, 0)
 FORECAST_HORIZON = 7
 BACKTEST_DAYS = 14
 
 
-# ─── Функции загрузки данных ────────────────────────────────────────────────
+# ─── Data Loading Functions ─────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def load_data():
-    # Используем period="max" или "2y" и явно указываем auto_adjust
     data = yf.download(TICKER, period="2y", interval="1d", progress=False, auto_adjust=True)
 
     if data.empty:
         return pd.Series()
 
-    # В новых версиях yfinance результат может быть MultiIndex или DataFrame
-    # Берем колонку Close максимально надежным способом
     if 'Close' in data.columns:
         prices = data['Close']
     else:
-        # Если колонок много (MultiIndex), берем первую доступную
         prices = data.iloc[:, 0]
 
-    # Если это DataFrame (бывает при MultiIndex), превращаем в Series
     if isinstance(prices, pd.DataFrame):
         prices = prices.iloc[:, 0]
 
@@ -47,10 +42,9 @@ def load_data():
     return prices
 
 
-# ─── Функции анализа ────────────────────────────────────────────────────────
+# ─── Analysis Functions ─────────────────────────────────────────────────────
 def run_backtest(prices, window=BACKTEST_DAYS):
-    """Безопасный бэктест"""
-    # Если данных слишком мало для бэктеста, уменьшаем окно
+    """Safe Walk-forward Backtest"""
     actual_window = min(window, len(prices) // 4)
     if actual_window < 5:
         return pd.Series(), pd.Series()
@@ -58,7 +52,6 @@ def run_backtest(prices, window=BACKTEST_DAYS):
     preds = []
     actuals = []
 
-    # Берем последние n дней для теста
     test_indices = range(actual_window, 0, -1)
 
     for i in test_indices:
@@ -68,7 +61,6 @@ def run_backtest(prices, window=BACKTEST_DAYS):
         try:
             model = ARIMA(train, order=ARIMA_ORDER)
             model_fit = model.fit()
-            # Используем .iloc[-1] для получения последнего значения прогноза
             forecast_val = model_fit.forecast(steps=1).iloc[-1]
             preds.append(forecast_val)
             actuals.append(actual)
@@ -80,7 +72,7 @@ def run_backtest(prices, window=BACKTEST_DAYS):
 
 
 def get_forecast(prices, steps=FORECAST_HORIZON):
-    """Прогноз на будущее"""
+    """Future Forecast"""
     model = ARIMA(prices, order=ARIMA_ORDER)
     model_fit = model.fit()
     fc_values = model_fit.forecast(steps=steps)
@@ -91,82 +83,95 @@ def get_forecast(prices, steps=FORECAST_HORIZON):
     return pd.Series(fc_values.values, index=fc_index)
 
 
-# ─── Основной интерфейс ─────────────────────────────────────────────────────
-st.title("📊 Прогноз цен Brent Crude")
+# ─── Main Interface ─────────────────────────────────────────────────────────
+st.title("📊 Brent Crude Oil Price Forecast")
 
 prices = load_data()
 
 if prices.empty:
-    st.error("Не удалось загрузить данные из Yahoo Finance. Попробуйте обновить страницу позже.")
+    st.error("Failed to load data from Yahoo Finance. Please refresh the page later.")
     st.stop()
 
-# Проверка на достаточное количество данных
 if len(prices) < 30:
-    st.warning(f"Слишком мало данных для анализа (всего {len(prices)} точек).")
+    st.warning(f"Not enough data for analysis (only {len(prices)} points found).")
     st.stop()
 
-with st.spinner('Выполняем расчеты...'):
-    # 1. Бэктест
+with st.spinner('Calculating forecast and metrics...'):
+    # 1. Backtest
     backtest_preds, backtest_actuals = run_backtest(prices)
 
-    # 2. Будущий прогноз
+    # 2. Future Forecast
     forecast = get_forecast(prices)
 
-# Сценарии в сайдбаре
-st.sidebar.header("Параметры")
-scenario = st.sidebar.selectbox("Сценарий:", ["Базовый", "Оптимистичный (+10%)", "Пессимистичный (-10%)"])
+# Sidebar for scenarios
+st.sidebar.header("Settings")
+scenario = st.sidebar.selectbox("Forecast Scenario:", ["Base Case", "Optimistic (+10%)", "Pessimistic (-10%)"])
 
-if scenario == "Оптимистичный (+10%)":
+if scenario == "Optimistic (+10%)":
     forecast = forecast * 1.10
-elif scenario == "Пессимистичный (-10%)":
+elif scenario == "Pessimistic (-10%)":
     forecast = forecast * 0.90
 
-# Метрики (показываем только если бэктест удался)
+# Metrics
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Текущая цена", f"${prices.iloc[-1]:.2f}")
+c1.metric("Current Price", f"${prices.iloc[-1]:.2f}")
 
 if not backtest_preds.empty:
     mae = mean_absolute_error(backtest_actuals, backtest_preds)
     mape = np.mean(np.abs((backtest_actuals - backtest_preds) / backtest_actuals)) * 100
-    c2.metric("Точность (MAE)", f"${mae:.2f}")
-    c4.metric("Погрешность (MAPE)", f"{mape:.1f}%")
+    c2.metric("Accuracy (MAE)", f"${mae:.2f}")
+    c4.metric("Error (MAPE)", f"{mape:.1f}%")
 else:
-    c2.write("Метрики недоступны")
+    c2.write("Metrics unavailable")
 
-# Графики
-tab1, tab2 = st.tabs(["📈 Прогноз", "📉 Проверка модели"])
+# Tabs for Charts
+tab1, tab2 = st.tabs(["📈 Forecast", "📉 Model Validation (Backtest)"])
 
 with tab1:
     fig_fc = go.Figure()
     hist_tail = prices.tail(30)
     fig_fc.add_trace(
-        go.Scatter(x=hist_tail.index, y=hist_tail.values, name="История", line=dict(color="#1f77b4", width=2)))
-    fig_fc.add_trace(go.Scatter(x=forecast.index, y=forecast.values, name="Прогноз",
+        go.Scatter(x=hist_tail.index, y=hist_tail.values, name="History", line=dict(color="#1f77b4", width=2)))
+    fig_fc.add_trace(go.Scatter(x=forecast.index, y=forecast.values, name="Forecast",
                                 line=dict(color="#ff7f0e", width=3, dash='dash')))
-    # Линия соединения
+    # Connection line
     fig_fc.add_trace(
         go.Scatter(x=[hist_tail.index[-1], forecast.index[0]], y=[hist_tail.values[-1], forecast.values[0]],
                    showlegend=False, line=dict(color="#ff7f0e", dash='dash')))
-    fig_fc.update_layout(title="Brent Crude: Прогноз на 7 дней", xaxis_title="Дата", yaxis_title="USD")
+    fig_fc.update_layout(title=f"Brent Crude: 7-Day Forecast ({scenario})", xaxis_title="Date", yaxis_title="USD",
+                         hovermode="x unified")
     st.plotly_chart(fig_fc, use_container_width=True)
 
 with tab2:
     if not backtest_preds.empty:
         fig_bt = go.Figure()
-        fig_bt.add_trace(go.Scatter(x=backtest_actuals.index, y=backtest_actuals.values, name="Факт"))
-        fig_bt.add_trace(go.Scatter(x=backtest_preds.index, y=backtest_preds.values, name="Модель"))
-        fig_bt.update_layout(title="Результаты бэктеста", xaxis_title="Дата", yaxis_title="USD")
+        fig_bt.add_trace(go.Scatter(x=backtest_actuals.index, y=backtest_actuals.values, name="Actual Price"))
+        fig_bt.add_trace(go.Scatter(x=backtest_preds.index, y=backtest_preds.values, name="Model Prediction"))
+        fig_bt.update_layout(title="Walk-forward Backtest Results (Last 14 Days)", xaxis_title="Date",
+                             yaxis_title="USD", hovermode="x unified")
         st.plotly_chart(fig_bt, use_container_width=True)
     else:
-        st.write("Недостаточно данных для бэктеста")
+        st.write("Insufficient data for backtesting")
 
-# Экспорт
-df_fc_export = pd.DataFrame({'Дата': forecast.index.date, 'Прогноз_USD': forecast.values.round(2)})
-st.subheader("Таблица прогноза")
+# Export Section
+df_fc_export = pd.DataFrame({'Date': forecast.index.date, 'Forecast_USD': forecast.values.round(2)})
+st.subheader("Forecast Data Table")
 st.table(df_fc_export)
 
-# Генерация Excel
+# Excel Generation
 output = io.BytesIO()
 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
     df_fc_export.to_excel(writer, index=False, sheet_name='Forecast')
-st.download_button(label="📥 Скачать в Excel", data=output.getvalue(), file_name="brent_forecast.xlsx")
+    if not backtest_preds.empty:
+        metrics_df = pd.DataFrame({'Metric': ['MAE', 'MAPE (%)'], 'Value': [mae, mape]})
+        metrics_df.to_excel(writer, index=False, sheet_name='Metrics')
+
+st.download_button(
+    label="📥 Download Excel Report",
+    data=output.getvalue(),
+    file_name=f"brent_forecast_{datetime.now().strftime('%Y%m%d')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+st.caption(
+    f"Data Source: Yahoo Finance (BZ=F). Model: ARIMA{ARIMA_ORDER}. Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
